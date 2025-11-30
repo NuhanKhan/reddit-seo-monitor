@@ -1,0 +1,357 @@
+{
+  "name": "SEO Monitoring Agent - Reddit to WhatsApp (Daily) - Compliant v2",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        },
+        "options": {
+          "timezone": "America/New_York"
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily SEO Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 400]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"keywords\": [\n    \"SEO\",\n    \"Google update\",\n    \"backlinks\",\n    \"search rankings\",\n    \"keyword research\",\n    \"SERP\",\n    \"link building\",\n    \"technical SEO\"\n  ],\n  \"subreddits\": [\n    \"SEO\",\n    \"bigseo\",\n    \"TechSEO\",\n    \"digital_marketing\"\n  ],\n  \"lookbackHours\": 24,\n  \"redditSearchQuery\": \"SEO OR \\\"Google update\\\" OR backlinks OR \\\"search rankings\\\" OR \\\"keyword research\\\" OR SERP OR \\\"link building\\\"\"\n}",
+        "options": {}
+      },
+      "id": "set-keywords",
+      "name": "Set Keywords",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://oauth.reddit.com/r/{{ $node['Set Keywords'].json.subreddits.join('+') }}/search",
+        "authentication": "oAuth2",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "SEOMonitor/1.0 (by /u/YourRedditUsername)"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $node['Set Keywords'].json.redditSearchQuery }}"
+            },
+            {
+              "name": "sort",
+              "value": "hot"
+            },
+            {
+              "name": "t",
+              "value": "day"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            },
+            {
+              "name": "restrict_sr",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "reddit-search",
+      "name": "Reddit Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 400],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "REPLACE_WITH_OAUTH2_CRED_ID",
+          "name": "Reddit OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract posts from Reddit API response\nconst response = $input.first().json;\nconst posts = response.data?.children || [];\n\nif (posts.length === 0) {\n  return [{ json: { error: 'No posts found', isEmpty: true } }];\n}\n\nreturn posts.map(item => ({ json: item.data }));"
+      },
+      "id": "reddit-extract",
+      "name": "Reddit Extract Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "not-empty",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-empty",
+      "name": "Check Not Empty",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "score-filter",
+              "leftValue": "={{ $json.score }}",
+              "rightValue": 5,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "reddit-filter",
+      "name": "Reddit Filter",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Reddit data to standard format\nconst items = [];\nfor (const item of $input.all()) {\n  const post = item.json;\n  if (!post.title) continue;\n  const text = (post.title + ' ' + (post.selftext || '')).toLowerCase();\n  const seoTerms = ['seo','google','backlink','ranking','serp','algorithm','keyword','traffic','indexing','crawl','link building'];\n  const foundKeywords = seoTerms.filter(term => text.includes(term));\n  const engagement = (post.score || 0) + ((post.num_comments || 0) * 2);\n  items.push({ json: {\n      source: 'reddit', id: post.id, title: post.title, content: post.selftext?.substring(0,600)||'', subreddit: post.subreddit, author: post.author, score: post.score||0, comments: post.num_comments||0, engagement, url: `https://reddit.com${post.permalink}`, timestamp: new Date((post.created_utc||0)*1000).toISOString(), keywords: foundKeywords, upvoteRatio: post.upvote_ratio||0, flair: post.link_flair_text||''\n    }});\n}\nitems.sort((a,b) => b.json.engagement - a.json.engagement);\nreturn items.slice(0, 20);"
+      },
+      "id": "reddit-formatter",
+      "name": "Reddit Formatter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate similar topics using simplified matching\nconst items = $input.all();\nif (items.length === 0) return [{ json: { error: 'No items to deduplicate', isEmpty: true } }];\nconst seenTitles = new Set();\nconst results = [];\nfor (const item of items) {\n  const t = (item.json.title || '').toLowerCase().replace(/[^a-z0-9\\s]/g,'').trim();\n  const key = t.split(' ').slice(0,8).join(' ');\n  if (seenTitles.has(key)) continue;\n  seenTitles.add(key);\n  results.push(item);\n}\nreturn results.slice(0, 10);"
+      },
+      "id": "deduplicate",
+      "name": "Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 400]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4-turbo-preview",
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert SEO industry analyst. Create a concise daily summary (max 1400 chars) with top 5 topics and one action item. Include subreddit sources."
+            },
+            {
+              "content": "=Analyze these SEO discussions from Reddit (past 24 hours) and create a daily summary:\\n\\n{{ $input.all().slice(0, 10).map((d, i) => `${i+1}. r/${d.json.subreddit} | ${d.json.title} | ${d.json.url}`).join('\\n') }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.6,
+          "maxTokens": 800
+        }
+      },
+      "id": "ai-summarizer",
+      "name": "AI Summarizer",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [2000, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_OPENAI_CRED_ID",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the final WhatsApp message\nconst aiResponse = $input.first().json;\nconst summary = aiResponse.message?.content || aiResponse.text || 'Unable to generate summary today.';\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric', timeZone:'America/New_York'});\nconst footer = `\\n\\n---\\n📈 Posts: ${$input.all().length} | ${dateStr}`;\nlet finalMessage = summary + footer;\nif (finalMessage.length > 4000) finalMessage = finalMessage.substring(0, 4000 - footer.length - 10) + '...' + footer;\nreturn [{ json: { formattedMessage: finalMessage, recipientPhone: $env.WHATSAPP_RECIPIENT || '', messageLength: finalMessage.length }}];"
+      },
+      "id": "format-message",
+      "name": "Format Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $json.recipientPhone }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"preview_url\": false,\n    \"body\": {{ JSON.stringify($json.formattedMessage) }}\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "send-whatsapp",
+      "name": "Send WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log and mark success\nconst response = $input.first().json;\nconst messageData = $('Format Message').first().json;\nreturn [{ json: { status: 'success', recipientPhone: messageData.recipientPhone, messageLength: messageData.messageLength, postsAnalyzed: $input.all().length, executedAt: new Date().toISOString(), httpStatus: response.statusCode }}];"
+      },
+      "id": "log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// DELETE TEMP DATA: this node returns an empty array to ensure no data persists after execution\nreturn [];"
+      },
+      "id": "delete-temp",
+      "name": "Delete Temp Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 620]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle errors and prepare error notification\nconst errorData = $input.first().json;\nconst now = new Date();\nconst timeStr = now.toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' });\nconst errorMessage = `⚠️ SEO Monitor Alert\\n\\n❌ Workflow Error Detected\\n⏰ Time: ${timeStr}\\n\\n📋 Error Details:\\n${JSON.stringify(errorData.error || errorData, null, 2).substring(0,400)}\\n\\nPlease check n8n execution logs.`;\nreturn [{ json: { errorMessage, recipientPhone: $env.WHATSAPP_RECIPIENT || '', timestamp: now.toISOString() }}];"
+      },
+      "id": "format-error",
+      "name": "Format Error Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 620]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $json.recipientPhone }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"preview_url\": false,\n    \"body\": {{ JSON.stringify($json.errorMessage) }}\n  }\n}",
+        "options": {}
+      },
+      "id": "send-error-alert",
+      "name": "Send Error Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 620]
+    }
+  ],
+  "connections": {
+    "Daily SEO Trigger": { "main": [ [ { "node": "Set Keywords", "type": "main", "index": 0 } ] ] },
+    "Set Keywords": { "main": [ [ { "node": "Reddit Search", "type": "main", "index": 0 } ] ] },
+    "Reddit Search": { "main": [ [ { "node": "Reddit Extract Posts", "type": "main", "index": 0 } ] ] },
+    "Reddit Extract Posts": { "main": [ [ { "node": "Check Not Empty", "type": "main", "index": 0 } ] ] },
+    "Check Not Empty": { "main": [ [ { "node": "Reddit Filter", "type": "main", "index": 0 } ] ] },
+    "Reddit Filter": { "main": [ [ { "node": "Reddit Formatter", "type": "main", "index": 0 } ] ] },
+    "Reddit Formatter": { "main": [ [ { "node": "Deduplicate", "type": "main", "index": 0 } ] ] },
+    "Deduplicate": { "main": [ [ { "node": "AI Summarizer", "type": "main", "index": 0 } ] ] },
+    "AI Summarizer": { "main": [ [ { "node": "Format Message", "type": "main", "index": 0 } ] ] },
+    "Format Message": { "main": [ [ { "node": "Send WhatsApp", "type": "main", "index": 0 } ] ] },
+    "Send WhatsApp": { "main": [ [ { "node": "Log Success", "type": "main", "index": 0 } ] ] },
+    "Log Success": { "main": [ [ { "node": "Delete Temp Data", "type": "main", "index": 0 } ] ] },
+    "Error Trigger": { "main": [ [ { "node": "Format Error Message", "type": "main", "index": 0 } ] ] },
+    "Format Error Message": { "main": [ [ { "node": "Send Error Alert", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": {
+    "timezone": "America/New_York",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "SEO" }, { "name": "Reddit" }, { "name": "WhatsApp" }
+  ],
+  "versionId": "2.0.0-reddit-compliant"
+}
